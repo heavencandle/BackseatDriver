@@ -1,4 +1,5 @@
-# Interactive Autonomous Vehicle Control and Simulation
+# BackseatDriver
+> Interactive Autonomous Vehicle Control and Simulation
 
 This project provides an interactive web application to control and simulate an autonomous vehicle in a virtual environment using natural language commands. The application uses Streamlit for the web interface, CARLA simulator for the virtual environment, and various AI models for natural language processing and computer vision.
 
@@ -61,5 +62,11 @@ This project provides an interactive web application to control and simulate an 
     streamlit run app.py
     ```
 3. Interact with the application:
-- Use the web interface to upload images and enter natural language commands.
-- The application will display the simulation and the vehicle's actions based on the commands provided.
+    - Use the web interface to upload images and enter natural language commands.
+    - The application will display the simulation and the vehicle's actions based on the commands provided.
+
+## Acknowledgments
+CARLA Simulator
+Streamlit
+PyTorch
+Hugging Face Transformers

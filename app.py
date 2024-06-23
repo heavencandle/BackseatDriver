@@ -1,90 +1,121 @@
+import os
+import sys
+os.environ['WEBOTS_HOME'] = 'C:\\Program Files\\Webots'
+os.environ['PYTHONPATH'] = os.path.join(os.environ['WEBOTS_HOME'], 'lib\\controller\\python') + ';' + os.environ.get('PYTHONPATH', '')
+sys.path.append(os.path.join(os.environ['WEBOTS_HOME'], 'lib\\controller\\python'))
 import streamlit as st
 import cv2
 import numpy as np
-from PIL import Image
-import torch
-from transformers import CLIPProcessor, CLIPModel, GPT2Tokenizer, GPT2LMHeadModel
-import carla
+import subprocess
+import time
+import os
+from threading import Thread
+from transformers import pipeline
+from controller import Robot, Camera
 
-st.title("Interactive Autonomous Vehicle Control and Simulation with Natural Language Commands")
-st.write("Control and simulate an autonomous vehicle in a virtual environment using natural language commands.")
+# Configuration
+TIME_STEP = 32
+OUTPUT_DIR = "/tmp/webots_data"
+COMMAND_FILE = "/tmp/command.txt"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Load models
-model = torch.hub.load('ultralytics/yolov5', 'yolov5s')
-clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-nlp_model = GPT2LMHeadModel.from_pretrained("gpt2")
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+# Initialize NLP model
+nlp_model = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
-# Connect to CARLA simulator
-client = carla.Client('localhost', 2000)
-client.set_timeout(10.0)
-world = client.get_world()
-blueprint_library = world.get_blueprint_library()
-vehicle_bp = blueprint_library.filter('model3')[0]
-spawn_point = world.get_map().get_spawn_points()[0]
-vehicle = world.spawn_actor(vehicle_bp, spawn_point)
+# Define possible commands
+commands = ["move forward", "turn left", "turn right", "stop"]
 
-def send_command(command):
-    # Translate the command to vehicle control actions and send them to CARLA
-    if "left" in command:
-        vehicle.apply_control(carla.VehicleControl(steer=-0.3))
-    elif "right" in command:
-        vehicle.apply_control(carla.VehicleControl(steer=0.3))
-    elif "forward" in command:
-        vehicle.apply_control(carla.VehicleControl(throttle=0.5))
-    elif "stop" in command:
-        vehicle.apply_control(carla.VehicleControl(throttle=0.0, brake=1.0))
+# Streamlit setup
+st.set_page_config(page_title="Autonomous Driving Simulator", page_icon="🚗")
+st.title("Autonomous Driving Simulator with NLP Control")
+st.markdown("""
+This application allows you to control a Webots simulation using natural language commands. Enter a command like "move forward", "turn left", "turn right", or "stop" to control the robot.
+""")
 
-def preprocess_frame(frame):
-    img = Image.fromarray(frame)
-    return img
+# Text input for commands
+user_command = st.text_input("Enter command:", "")
 
-def detect_objects(frame):
-    results = model(frame)
-    return results.pandas().xyxy[0]  # Bounding boxes and labels
+if user_command:
+    # Classify the command
+    result = nlp_model(user_command, commands)
+    command = result['labels'][0]
 
-def generate_scene_description(image):
-    inputs = processor(text=["a photo of something"], images=image, return_tensors="pt", padding=True)
-    outputs = clip_model(**inputs)
-    logits_per_image = outputs.logits_per_image
-    probs = logits_per_image.softmax(dim=1)  # Get probabilities
-    return probs
+    # Write command to file
+    with open(COMMAND_FILE, "w") as f:
+        f.write(command)
+    st.write(f"Command '{command}' sent to the robot.")
 
-def interpret_command(command):
-    inputs = tokenizer(command, return_tensors="pt")
-    outputs = nlp_model.generate(inputs)
-    return tokenizer.decode(outputs[0])
+# Function to get the latest frame
+def get_latest_frame():
+    frame_path = os.path.join(OUTPUT_DIR, "frame.jpg")
+    if os.path.exists(frame_path):
+        frame = cv2.imread(frame_path)
+        return frame
+    return None
 
-def generate_actions(scene_description, command):
-    actions = interpret_command(command)
-    return actions
+# Webots controller logic
+def run_webots_controller():
+    robot = Robot()
+    timestep = int(robot.getBasicTimeStep())
 
-def display_simulation(frame, actions):
-    send_command(actions)
-    st.image(frame, channels="BGR")
-    st.write(f"Actions: {actions}")
+    # Initialize camera
+    camera = robot.getDevice("receiver")
+    camera.enable(TIME_STEP)
 
-if st.button('Start Simulation'):
-    cap = cv2.VideoCapture(0)  # Simulated video feed from virtual environment
+    while robot.step(TIME_STEP) != -1:
+        # Capture camera image
+        image = camera.getImage()
+        np_image = np.frombuffer(image, np.uint8).reshape((camera.getHeight(), camera.getWidth(), 4))
+        _, buffer = cv2.imencode('.jpg', np_image)
+
+        # Save the frame to a file
+        with open(os.path.join(OUTPUT_DIR, "frame.jpg"), "wb") as f:
+            f.write(buffer)
+
+        # Check for new commands
+        if os.path.exists(COMMAND_FILE):
+            with open(COMMAND_FILE, "r") as f:
+                command = f.read().strip()
+            os.remove(COMMAND_FILE)
+
+            # Execute command
+            if command == "move forward":
+                # Set wheel velocities for moving forward
+                robot.getMotor('left_wheel').setVelocity(1.0)
+                robot.getMotor('right_wheel').setVelocity(1.0)
+            elif command == "turn left":
+                # Set wheel velocities for turning left
+                robot.getMotor('left_wheel').setVelocity(-1.0)
+                robot.getMotor('right_wheel').setVelocity(1.0)
+            elif command == "turn right":
+                # Set wheel velocities for turning right
+                robot.getMotor('left_wheel').setVelocity(1.0)
+                robot.getMotor('right_wheel').setVelocity(-1.0)
+            elif command == "stop":
+                # Set wheel velocities for stopping
+                robot.getMotor('left_wheel').setVelocity(0)
+                robot.getMotor('right_wheel').setVelocity(0)
+
+# Start the Webots simulation as a subprocess
+# webots_process = subprocess.Popen(['webots', '--mode=fast', 'path/to/your/world.wbt'])
+
+# Start the Webots controller in a separate thread
+controller_thread = Thread(target=run_webots_controller)
+controller_thread.start()
+
+# Streamlit main loop
+try:
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        scene_description = generate_scene_description(frame)
-        st.write(f"Scene Description: {scene_description}")
-        command = st.text_input("Enter a command for the vehicle:")
-        if command:
-            actions = generate_actions(scene_description, command)
-            display_simulation(frame, actions)
-    cap.release()
+        frame = get_latest_frame()
 
-uploaded_file = st.file_uploader("Choose an image...", type="jpg")
-if uploaded_file is not None:
-    image = np.array(Image.open(uploaded_file))
-    scene_description = generate_scene_description(image)
-    st.write(f"Scene Description: {scene_description}")
-    command = st.text_input("Enter a command for the vehicle:")
-    if command:
-        actions = generate_actions(scene_description, command)
-        display_simulation(image, actions)
+        if frame is not None:
+            st.image(frame, channels="BGR")
+
+        time.sleep(0.1)  # Adjust the sleep time as needed
+
+except Exception as e:
+    st.error(f"An error occurred: {e}")
+
+finally:
+    # webots_process.terminate()
+    controller_thread.join()
