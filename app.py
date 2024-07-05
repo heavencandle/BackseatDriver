@@ -1,3 +1,5 @@
+!! TODO: check communication between app.py and webots, and make robots / vehicle to move
+
 import os
 import sys
 os.environ['WEBOTS_HOME'] = 'C:\\Program Files\\Webots'
